@@ -40,8 +40,8 @@
 
 1.  **Clone โปรเจคนี้**:
     ```bash
-    git clone https://github.com/sicomanzer/gg-kfc.git
-    cd gg-kfc
+    git clone https://github.com/sicomanzer/gg-kfcv2.git
+    cd gg-kfcv2
     ```
 
 2.  **ติดตั้ง Library ที่จำเป็น**:
