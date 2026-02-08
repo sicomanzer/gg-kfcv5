@@ -11,6 +11,7 @@ if not os.path.exists(cache_dir):
     os.makedirs(cache_dir)
 yf.set_tz_cache_location(cache_dir)
 import datetime
+import pytz
 from consts import SET100_TICKERS, LONG_TERM_GROWTH, RISK_FREE_RATE, MARKET_RETURN
 import concurrent.futures
 import plotly.express as px
@@ -67,7 +68,9 @@ def fetch_raw_market_data():
     Returns: (results, fetch_timestamp)
     """
     results = []
-    fetch_timestamp = datetime.datetime.now()
+    # Use Thailand Time (UTC+7)
+    tz = pytz.timezone('Asia/Bangkok')
+    fetch_timestamp = datetime.datetime.now(tz)
     
     # Progress bar setup
     progress_text = "กำลังดึงข้อมูลหุ้น... โปรดรอสักครู่"
