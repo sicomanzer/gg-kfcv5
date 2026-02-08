@@ -798,3 +798,73 @@ def save_config(config):
     import json
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f)
+
+ALERT_LOG_FILE = "alert_log.json"
+
+def load_alert_log():
+    import json
+    import os
+    if not os.path.exists(ALERT_LOG_FILE):
+        return {}
+    try:
+        with open(ALERT_LOG_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_alert_log(log):
+    import json
+    with open(ALERT_LOG_FILE, 'w') as f:
+        json.dump(log, f)
+
+def check_and_send_alerts(buy_list, sell_list, config):
+    """
+    Checks for new stocks that haven't been alerted today and sends Telegram notifications.
+    Returns: list of sent messages or status strings
+    """
+    import datetime
+    
+    # 1. Check Configuration
+    channel = config.get('notify_channel', 'หน้าเว็บ (Web Only)')
+    if "Telegram" not in channel and "Both" not in channel:
+        return []
+        
+    tg_token = config.get('telegram_token', '')
+    tg_chat_id = config.get('telegram_chat_id', '')
+    
+    if not tg_token or not tg_chat_id:
+        return []
+        
+    # 2. Load Log
+    alert_log = load_alert_log()
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    
+    if today_str not in alert_log:
+        alert_log[today_str] = {"buy": [], "sell": []}
+        
+    # 3. Identify New Alerts
+    new_buys = [s for s in buy_list if s not in alert_log[today_str]["buy"]]
+    new_sells = [s for s in sell_list if s not in alert_log[today_str]["sell"]]
+    
+    sent_logs = []
+    
+    # 4. Send Messages
+    if new_buys:
+        msg = f"🟢 *New Strong Buy Alert!*\nหุ้นเข้าเกณฑ์สะสมใหม่: {', '.join(new_buys)}"
+        success, res = send_telegram_message(tg_token, tg_chat_id, msg)
+        if success:
+            alert_log[today_str]["buy"].extend(new_buys)
+            sent_logs.append(f"Sent Buy Alert for {len(new_buys)} stocks")
+            
+    if new_sells:
+        msg = f"🔴 *New Sell Signal Alert!*\nหุ้นสัญญาณขายใหม่: {', '.join(new_sells)}"
+        success, res = send_telegram_message(tg_token, tg_chat_id, msg)
+        if success:
+            alert_log[today_str]["sell"].extend(new_sells)
+            sent_logs.append(f"Sent Sell Alert for {len(new_sells)} stocks")
+            
+    # 5. Save Log
+    if sent_logs:
+        save_alert_log(alert_log)
+        
+    return sent_logs

@@ -268,11 +268,12 @@ if page == "แดชบอร์ดภาพรวม":
         
         st.markdown("---")
         
-        # --- AUTO NOTIFICATION (Toast) ---
+        # --- AUTO NOTIFICATION (Toast & Telegram) ---
         # Trigger only once per load
         config = utils.load_config()
         notify_channel = config.get('notify_channel', 'หน้าเว็บ (Web Only)')
         
+        # 1. Web Toast Notification
         if "หน้าเว็บ" in notify_channel or "Both" in notify_channel:
             if not buy_list.empty:
                 buy_names = ", ".join(buy_list['symbol'].head(3).tolist())
@@ -283,6 +284,16 @@ if page == "แดชบอร์ดภาพรวม":
                 sell_names = ", ".join(sell_list['symbol'].head(3).tolist())
                 more_sell = f" และอีก {len(sell_list)-3} ตัว" if len(sell_list) > 3 else ""
                 st.toast(f"🔔 เจอหุ้น Sell Signal: {sell_names}{more_sell}", icon="🔴")
+        
+        # 2. Telegram Notification (Auto with Deduplication)
+        # Check if there are new alerts that haven't been sent today
+        sent_msgs = utils.check_and_send_alerts(
+            buy_list['symbol'].tolist(), 
+            sell_list['symbol'].tolist(), 
+            config
+        )
+        if sent_msgs:
+            st.toast(f"📨 ส่งแจ้งเตือน Telegram แล้ว ({len(sent_msgs)} รายการ)", icon="🚀")
 
         # --- Styling Functions ---
         def highlight_price_ddm(x):
