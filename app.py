@@ -1590,3 +1590,31 @@ elif page == "ตั้งค่า":
         
         # Clear cache so new tickers are used next time
         st.cache_data.clear()
+
+    st.markdown("---")
+    st.subheader("🔔 ตั้งค่าการแจ้งเตือน (Line Notify)")
+    st.markdown("รับการแจ้งเตือนเมื่อมีหุ้นเข้าเกณฑ์ซื้อ/ขาย ผ่าน Line Notify")
+    
+    # Load config
+    config = utils.load_config()
+    current_token = config.get('line_token', '')
+    
+    line_token = st.text_input("Line Notify Token", value=current_token, type="password", help="ไปที่ https://notify-bot.line.me/my/ เพื่อออก Token")
+    
+    col_n1, col_n2 = st.columns([1, 3])
+    with col_n1:
+        if st.button("บันทึก Token"):
+            config['line_token'] = line_token
+            utils.save_config(config)
+            st.success("บันทึก Token เรียบร้อยแล้ว")
+            
+    with col_n2:
+        if st.button("ทดสอบการแจ้งเตือน (Test)"):
+            if line_token:
+                success, msg = utils.send_line_notify(line_token, "🔔 ทดสอบการแจ้งเตือนจาก Thai VI Screener: ระบบใช้งานได้ปกติครับ!")
+                if success:
+                    st.success("ส่งข้อความทดสอบสำเร็จ! โปรดตรวจสอบ Line ของคุณ")
+                else:
+                    st.error(f"ส่งข้อความไม่สำเร็จ: {msg}")
+            else:
+                st.warning("กรุณาบันทึก Line Token ก่อนทดสอบ")
