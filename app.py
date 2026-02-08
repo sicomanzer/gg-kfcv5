@@ -295,6 +295,38 @@ if page == "แดชบอร์ดภาพรวม":
         if sent_msgs:
             st.toast(f"📨 ส่งแจ้งเตือน Telegram แล้ว ({len(sent_msgs)} รายการ)", icon="🚀")
 
+        # --- TODAY'S ALERT LOG ---
+        st.markdown("---")
+        with st.expander("🔔 ประวัติการแจ้งเตือนวันนี้ (Today's Alert Log)", expanded=False):
+            alert_log = utils.load_alert_log()
+            today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            
+            if today_str in alert_log:
+                log_data = alert_log[today_str]
+                buy_alerts = log_data.get("buy", [])
+                sell_alerts = log_data.get("sell", [])
+                
+                col_log1, col_log2 = st.columns(2)
+                
+                with col_log1:
+                    st.success(f"🟢 **แจ้งเตือน Strong Buy ({len(buy_alerts)})**")
+                    if buy_alerts:
+                        # Create detail df
+                        alert_df_buy = df[df['symbol'].isin(buy_alerts)][['symbol', 'price', 'VI Score']]
+                        st.dataframe(alert_df_buy, hide_index=True)
+                    else:
+                        st.caption("ไม่มีรายการแจ้งเตือน")
+                        
+                with col_log2:
+                    st.error(f"🔴 **แจ้งเตือน Sell Signal ({len(sell_alerts)})**")
+                    if sell_alerts:
+                        alert_df_sell = df[df['symbol'].isin(sell_alerts)][['symbol', 'price', 'VI Score']]
+                        st.dataframe(alert_df_sell, hide_index=True)
+                    else:
+                        st.caption("ไม่มีรายการแจ้งเตือน")
+            else:
+                st.info("ยังไม่มีประวัติการแจ้งเตือนในวันนี้")
+
         # --- Styling Functions ---
         def highlight_price_ddm(x):
             df_st = pd.DataFrame('', index=x.index, columns=x.columns)
