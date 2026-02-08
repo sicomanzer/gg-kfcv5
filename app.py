@@ -266,8 +266,6 @@ if page == "แดชบอร์ดภาพรวม":
             else:
                 st.caption("ไม่มีหุ้นที่ต้องระวังเป็นพิเศษ")
         
-        st.markdown("---")
-        
         # --- AUTO NOTIFICATION (Toast & Telegram) ---
         # Trigger only once per load
         config = utils.load_config()
@@ -296,7 +294,6 @@ if page == "แดชบอร์ดภาพรวม":
             st.toast(f"📨 ส่งแจ้งเตือน Telegram แล้ว ({len(sent_msgs)} รายการ)", icon="🚀")
 
         # --- TODAY'S ALERT LOG ---
-        st.markdown("---")
         with st.expander("🔔 ประวัติการแจ้งเตือนวันนี้ (Today's Alert Log)", expanded=False):
             alert_log = utils.load_alert_log()
             today_str = datetime.datetime.now().strftime("%Y-%m-%d")
