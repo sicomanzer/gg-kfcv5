@@ -1592,29 +1592,35 @@ elif page == "ตั้งค่า":
         st.cache_data.clear()
 
     st.markdown("---")
-    st.subheader("🔔 ตั้งค่าการแจ้งเตือน (Line Notify)")
-    st.markdown("รับการแจ้งเตือนเมื่อมีหุ้นเข้าเกณฑ์ซื้อ/ขาย ผ่าน Line Notify")
+    st.subheader("🔔 ตั้งค่าการแจ้งเตือน (Telegram)")
+    st.markdown("รับการแจ้งเตือนเมื่อมีหุ้นเข้าเกณฑ์ซื้อ/ขาย ผ่าน Telegram Bot")
     
     # Load config
     config = utils.load_config()
-    current_token = config.get('line_token', '')
+    current_tg_token = config.get('telegram_token', '')
+    current_tg_chat_id = config.get('telegram_chat_id', '')
     
-    line_token = st.text_input("Line Notify Token", value=current_token, type="password", help="ไปที่ https://notify-bot.line.me/my/ เพื่อออก Token")
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        tg_token = st.text_input("Telegram Bot Token", value=current_tg_token, type="password", help="รับ Token จาก @BotFather")
+    with col_t2:
+        tg_chat_id = st.text_input("Telegram Chat ID", value=current_tg_chat_id, help="ใช้ Bot @userinfobot เพื่อหา Chat ID")
     
     col_n1, col_n2 = st.columns([1, 3])
     with col_n1:
-        if st.button("บันทึก Token"):
-            config['line_token'] = line_token
+        if st.button("บันทึกการตั้งค่า"):
+            config['telegram_token'] = tg_token
+            config['telegram_chat_id'] = tg_chat_id
             utils.save_config(config)
-            st.success("บันทึก Token เรียบร้อยแล้ว")
+            st.success("บันทึกการตั้งค่าเรียบร้อยแล้ว")
             
     with col_n2:
         if st.button("ทดสอบการแจ้งเตือน (Test)"):
-            if line_token:
-                success, msg = utils.send_line_notify(line_token, "🔔 ทดสอบการแจ้งเตือนจาก Thai VI Screener: ระบบใช้งานได้ปกติครับ!")
+            if tg_token and tg_chat_id:
+                success, msg = utils.send_telegram_message(tg_token, tg_chat_id, "*🔔 ทดสอบการแจ้งเตือนจาก Thai VI Screener*\n\nระบบใช้งานได้ปกติครับ!")
                 if success:
-                    st.success("ส่งข้อความทดสอบสำเร็จ! โปรดตรวจสอบ Line ของคุณ")
+                    st.success("ส่งข้อความทดสอบสำเร็จ! โปรดตรวจสอบ Telegram ของคุณ")
                 else:
                     st.error(f"ส่งข้อความไม่สำเร็จ: {msg}")
             else:
-                st.warning("กรุณาบันทึก Line Token ก่อนทดสอบ")
+                st.warning("กรุณาบันทึก Token และ Chat ID ก่อนทดสอบ")
