@@ -275,9 +275,14 @@ if page == "แดชบอร์ดภาพรวม":
         
         if "หน้าเว็บ" in notify_channel or "Both" in notify_channel:
             if not buy_list.empty:
-                st.toast(f"🔔 เจอหุ้น Strong Buy {len(buy_list)} ตัว!", icon="🟢")
+                buy_names = ", ".join(buy_list['symbol'].head(3).tolist())
+                more_buy = f" และอีก {len(buy_list)-3} ตัว" if len(buy_list) > 3 else ""
+                st.toast(f"🔔 เจอหุ้น Strong Buy: {buy_names}{more_buy}", icon="🟢")
+                
             if not sell_list.empty:
-                st.toast(f"🔔 เจอหุ้น Sell Signal {len(sell_list)} ตัว!", icon="🔴")
+                sell_names = ", ".join(sell_list['symbol'].head(3).tolist())
+                more_sell = f" และอีก {len(sell_list)-3} ตัว" if len(sell_list) > 3 else ""
+                st.toast(f"🔔 เจอหุ้น Sell Signal: {sell_names}{more_sell}", icon="🔴")
 
         # --- Styling Functions ---
         def highlight_price_ddm(x):
