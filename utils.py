@@ -868,3 +868,17 @@ def check_and_send_alerts(buy_list, sell_list, config):
         save_alert_log(alert_log)
         
     return sent_logs
+
+def fetch_stock_news(ticker_symbol):
+    """
+    Fetches latest news for a stock using yfinance.
+    Returns list of dicts: {title, publisher, link, type, thumbnail}
+    """
+    try:
+        t = ticker_symbol + ".BK" if not ticker_symbol.endswith(".BK") else ticker_symbol
+        stock = yf.Ticker(t)
+        news = stock.news
+        return news if news else []
+    except Exception as e:
+        print(f"Error fetching news for {ticker_symbol}: {e}")
+        return []

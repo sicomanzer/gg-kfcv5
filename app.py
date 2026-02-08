@@ -33,9 +33,31 @@ SET100_TICKERS = utils.load_tickers()
 st.sidebar.title("🇹🇭 Thai Value Investor")
 st.sidebar.markdown("### 🎛️ โมเดลประเมินมูลค่า")
 with st.sidebar.expander("ตั้งค่าสมมติฐาน (Assumption)", expanded=False):
-    st_rf = st.number_input("อัตราผลตอบแทนพันธบัตร (Risk Free %)", value=RISK_FREE_RATE*100, step=0.1, format="%.2f") / 100
-    st_rm = st.number_input("ผลตอบแทนตลาด (Market Return %)", value=MARKET_RETURN*100, step=0.1, format="%.2f") / 100
-    st_g = st.number_input("การเติบโตระยะยาว (Terminal Growth %)", value=LONG_TERM_GROWTH*100, step=0.1, format="%.2f") / 100
+    # Economic Scenario Selector
+    scenario = st.selectbox("สภาวะเศรษฐกิจ (Economic Scenario)", 
+                           ["Normal (ปกติ)", "Recession (ถดถอย)", "Crisis (วิกฤต)"],
+                           help="ปรับเปลี่ยนสมมติฐานความเสี่ยงและการเติบโตอัตโนมัติ")
+    
+    # Base Values
+    base_rf = RISK_FREE_RATE
+    base_rm = MARKET_RETURN
+    base_g = LONG_TERM_GROWTH
+    
+    # Adjust based on scenario
+    if "Recession" in scenario:
+        base_rf = 0.02 # Bond yields drop
+        base_rm = 0.06 # Market return drops
+        base_g = 0.01  # Growth slows
+        st.caption("⚠️ โหมดถดถอย: ลดคาดการณ์ผลตอบแทนและการเติบโต")
+    elif "Crisis" in scenario:
+        base_rf = 0.01
+        base_rm = 0.04
+        base_g = 0.00
+        st.caption("🚨 โหมดวิกฤต: สมมติฐานเลวร้ายที่สุด (No Growth)")
+        
+    st_rf = st.number_input("อัตราผลตอบแทนพันธบัตร (Risk Free %)", value=base_rf*100, step=0.1, format="%.2f") / 100
+    st_rm = st.number_input("ผลตอบแทนตลาด (Market Return %)", value=base_rm*100, step=0.1, format="%.2f") / 100
+    st_g = st.number_input("การเติบโตระยะยาว (Terminal Growth %)", value=base_g*100, step=0.1, format="%.2f") / 100
     
     st.markdown("---")
     st.markdown("**กำหนดค่า K เอง (Override CAPM)**")
@@ -925,7 +947,7 @@ elif page == "วิเคราะห์หุ้นรายตัว":
                 st.info("ℹ️ **หมายเหตุข้อมูล:** ข้อมูลย้อนหลังประมาณ 4 ปีล่าสุด | ตัวเลขคาดการณ์อ้างอิงจากบทวิเคราะห์ (Analyst Estimates)")
                 
                 # Tabs for different views
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 การเติบโต & กำไร", "💪 ประสิทธิภาพการทำกำไร", "🔮 คาดการณ์อนาคต", "📉 PE Band & Matrix"])
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 การเติบโต & กำไร", "💪 ประสิทธิภาพการทำกำไร", "🔮 คาดการณ์อนาคต", "📉 PE Band & Matrix", "📰 ข่าวล่าสุด"])
                 
                 if not fin_hist.empty:
                     with tab1:
@@ -1032,6 +1054,33 @@ elif page == "วิเคราะห์หุ้นรายตัว":
                          st.markdown(f"**ค่าเฉลี่ย PE 5 ปีย้อนหลัง:** {pe_band_data['avg_pe']:.2f} เท่า | **PE ปัจจุบัน:** {pe_band_data['current_pe']:.2f} เท่า")
                     else:
                          st.error("ข้อมูลไม่เพียงพอสำหรับสร้าง PE Band (ต้องการกำไรย้อนหลังต่อเนื่อง)")
+
+                with tab5:
+                    # News Section
+                    st.markdown("##### 📰 ข่าวล่าสุด (Latest News)")
+                    st.caption("ดึงข้อมูลข่าวจาก Yahoo Finance")
+                    
+                    news_list = utils.fetch_stock_news(selected_ticker)
+                    
+                    if news_list:
+                        for news in news_list[:5]: # Show top 5
+                            with st.expander(f"{news.get('title', 'No Title')}"):
+                                pub_time = "N/A"
+                                if 'providerPublishTime' in news:
+                                    import datetime
+                                    pub_time = datetime.datetime.fromtimestamp(news['providerPublishTime']).strftime('%Y-%m-%d %H:%M')
+                                    
+                                st.caption(f"Source: {news.get('publisher', 'Unknown')} | Time: {pub_time}")
+                                st.markdown(f"[อ่านข่าวฉบับเต็ม]({news.get('link', '#')})")
+                                if 'thumbnail' in news and 'resolutions' in news['thumbnail']:
+                                     # Try to get thumbnail
+                                     try:
+                                         thumb_url = news['thumbnail']['resolutions'][0]['url']
+                                         st.image(thumb_url, width=200)
+                                     except:
+                                         pass
+                    else:
+                        st.info("ไม่พบข่าวล่าสุดในระบบ")
 
                 # --- 8 Qualities Checklist (Enhanced) ---
                 st.markdown("---")
