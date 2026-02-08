@@ -1592,35 +1592,60 @@ elif page == "ตั้งค่า":
         st.cache_data.clear()
 
     st.markdown("---")
-    st.subheader("🔔 ตั้งค่าการแจ้งเตือน (Telegram)")
-    st.markdown("รับการแจ้งเตือนเมื่อมีหุ้นเข้าเกณฑ์ซื้อ/ขาย ผ่าน Telegram Bot")
+    st.subheader("🔔 ตั้งค่าการแจ้งเตือน (Notification)")
+    st.markdown("เลือกช่องทางการแจ้งเตือนเมื่อมีหุ้นเข้าเกณฑ์ซื้อ/ขาย")
     
     # Load config
     config = utils.load_config()
     current_tg_token = config.get('telegram_token', '')
     current_tg_chat_id = config.get('telegram_chat_id', '')
+    current_channel = config.get('notify_channel', 'หน้าเว็บ (Web Only)')
     
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        tg_token = st.text_input("Telegram Bot Token", value=current_tg_token, type="password", help="รับ Token จาก @BotFather")
-    with col_t2:
-        tg_chat_id = st.text_input("Telegram Chat ID", value=current_tg_chat_id, help="ใช้ Bot @userinfobot เพื่อหา Chat ID")
+    # Channel Selection
+    notify_options = ["หน้าเว็บ (Web Only)", "Telegram", "หน้าเว็บและ Telegram (Both)"]
+    # Handle case where saved config might be invalid
+    if current_channel not in notify_options:
+        current_channel = notify_options[0]
+        
+    selected_channel = st.radio("เลือกช่องทางแจ้งเตือน:", notify_options, index=notify_options.index(current_channel))
+    
+    # Telegram Config (Show only if needed)
+    tg_token = current_tg_token
+    tg_chat_id = current_tg_chat_id
+    
+    if "Telegram" in selected_channel:
+        st.markdown("##### ตั้งค่า Telegram")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            tg_token = st.text_input("Telegram Bot Token", value=current_tg_token, type="password", help="รับ Token จาก @BotFather")
+        with col_t2:
+            tg_chat_id = st.text_input("Telegram Chat ID", value=current_tg_chat_id, help="ใช้ Bot @userinfobot เพื่อหา Chat ID")
     
     col_n1, col_n2 = st.columns([1, 3])
     with col_n1:
         if st.button("บันทึกการตั้งค่า"):
             config['telegram_token'] = tg_token
             config['telegram_chat_id'] = tg_chat_id
+            config['notify_channel'] = selected_channel
             utils.save_config(config)
             st.success("บันทึกการตั้งค่าเรียบร้อยแล้ว")
             
     with col_n2:
         if st.button("ทดสอบการแจ้งเตือน (Test)"):
-            if tg_token and tg_chat_id:
-                success, msg = utils.send_telegram_message(tg_token, tg_chat_id, "*🔔 ทดสอบการแจ้งเตือนจาก Thai VI Screener*\n\nระบบใช้งานได้ปกติครับ!")
-                if success:
-                    st.success("ส่งข้อความทดสอบสำเร็จ! โปรดตรวจสอบ Telegram ของคุณ")
+            test_msg = "*🔔 ทดสอบการแจ้งเตือนจาก Thai VI Screener*\n\nระบบใช้งานได้ปกติครับ!"
+            
+            # 1. Web Notification
+            if "หน้าเว็บ" in selected_channel:
+                st.toast("🔔 แจ้งเตือน: ระบบใช้งานได้ปกติครับ! (Web Notification)", icon="✅")
+                st.info("✅ Web Notification: แสดงผลบนหน้าเว็บเรียบร้อย")
+                
+            # 2. Telegram Notification
+            if "Telegram" in selected_channel:
+                if tg_token and tg_chat_id:
+                    success, msg = utils.send_telegram_message(tg_token, tg_chat_id, test_msg)
+                    if success:
+                        st.success("✅ Telegram Notification: ส่งข้อความสำเร็จ! โปรดตรวจสอบ Telegram ของคุณ")
+                    else:
+                        st.error(f"❌ Telegram Notification Failed: {msg}")
                 else:
-                    st.error(f"ส่งข้อความไม่สำเร็จ: {msg}")
-            else:
-                st.warning("กรุณาบันทึก Token และ Chat ID ก่อนทดสอบ")
+                    st.warning("⚠️ กรุณาบันทึก Token และ Chat ID ก่อนทดสอบ Telegram")
