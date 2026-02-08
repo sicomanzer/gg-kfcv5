@@ -389,7 +389,7 @@ def calculate_magic_formula_and_f_score(ticker_symbol):
 
 
 
-def calculate_valuations(data, risk_free_rate=RISK_FREE_RATE, market_return=MARKET_RETURN, long_term_growth=LONG_TERM_GROWTH):
+def calculate_valuations(data, risk_free_rate=RISK_FREE_RATE, market_return=MARKET_RETURN, long_term_growth=LONG_TERM_GROWTH, manual_k=0):
     """
     Calculates intrinsic value based on the 3 methods.
     Allows dynamic parameters for sensitivity analysis.
@@ -402,34 +402,59 @@ def calculate_valuations(data, risk_free_rate=RISK_FREE_RATE, market_return=MARK
     
     # 1. Calculate Required Return (k)
     # k = Rf + beta * (Rm - Rf)
-    # Checking for critical beta
-    # If beta is unreasonably low (e.g. < 0.4), it distorts CAPM, making k too low.
-    # We apply a 'Conservative Beta Floor' of 0.6 for valuation purposes.
-    if pd.isna(data['beta']) or data['beta'] < 0.6:
-        beta = 0.6
+    
+    # If manual_k is provided (>0), override CAPM
+    if manual_k > 0:
+        k = manual_k
     else:
-        beta = data['beta']
-        
-    k = risk_free_rate + beta * (market_return - risk_free_rate)
+        # Checking for critical beta
+        # If beta is unreasonably low (e.g. < 0.4), it distorts CAPM, making k too low.
+        # We apply a 'Conservative Beta Floor' of 0.6 for valuation purposes.
+        if pd.isna(data['beta']) or data['beta'] < 0.6:
+            beta = 0.6
+        else:
+            beta = data['beta']
+            
+        k = risk_free_rate + beta * (market_return - risk_free_rate)
     
     # 2. Safety Margin for Growth/Discount Rate
     
     g = long_term_growth
     
     # If k is too close to g, valuation explodes.
-    # Enforce a minimum spread (k - g) of at least 2.5% (conservative measure).
-    min_spread = 0.025
+    # Enforce a minimum spread (k - g) of at least 1.0% (Lowered to allow specific VI cases like 5% K - 3% G).
+    min_spread = 0.01
     if (k - g) < min_spread:
         k = g + min_spread
 
     denominator = k - g
     
-    # Method 1: DDM
-    # Price = D1 / (k - g)
-    # Assume D1 = Current Dividend * (1 + g)
-    if not pd.isna(data['dividendRate']):
-        d1 = data['dividendRate'] * (1 + g)
-        val_ddm = d1 / denominator
+    # Method 1: DDM (2-Stage Model)
+    # Matches user request for explicit forecast + terminal value
+    # Default: Assumes short-term growth = long-term growth (Standard DDM) unless specified
+    # Formula: Sum(PV_Div_1..N) + PV(Terminal_Value_N)
+    if not pd.isna(data['dividendRate']) and data['dividendRate'] > 0:
+        d0 = data['dividendRate']
+        
+        # Parameters
+        n_years = 5
+        g_short = g # Currently using same g, but structure allows split
+        g_term = g
+        
+        # 1. Explicit Period (1-5 Years)
+        sum_pv_div = 0
+        d_curr = d0
+        for i in range(1, n_years + 1):
+            d_curr *= (1 + g_short)
+            sum_pv_div += d_curr / ((1 + k) ** i)
+            
+        # 2. Terminal Value (at end of Year 5)
+        # Value of dividends from Year 6 onwards
+        d_next = d_curr * (1 + g_term) # D6
+        tv = d_next / (k - g_term) # Value at Year 5
+        pv_tv = tv / ((1 + k) ** n_years) # Discount back 5 years
+        
+        val_ddm = sum_pv_div + pv_tv
     else:
         val_ddm = np.nan
 
@@ -490,6 +515,7 @@ def calculate_valuations(data, risk_free_rate=RISK_FREE_RATE, market_return=MARK
         **data,
         **new_fields,
         'k_percent': k * 100,
+        'terminal_growth_percent': g * 100,
         'valuation_ddm': val_ddm,
         'valuation_pe': val_pe,
         'valuation_pbv': val_pbv,

@@ -10,6 +10,7 @@ cache_dir = os.path.join(os.getcwd(), "yf_cache")
 if not os.path.exists(cache_dir):
     os.makedirs(cache_dir)
 yf.set_tz_cache_location(cache_dir)
+import datetime
 from consts import SET100_TICKERS, LONG_TERM_GROWTH, RISK_FREE_RATE, MARKET_RETURN
 import concurrent.futures
 import plotly.express as px
@@ -35,6 +36,10 @@ with st.sidebar.expander("ตั้งค่าสมมติฐาน (Assumpt
     st_rm = st.number_input("ผลตอบแทนตลาด (Market Return %)", value=MARKET_RETURN*100, step=0.1, format="%.2f") / 100
     st_g = st.number_input("การเติบโตระยะยาว (Terminal Growth %)", value=LONG_TERM_GROWTH*100, step=0.1, format="%.2f") / 100
     
+    st.markdown("---")
+    st.markdown("**กำหนดค่า K เอง (Override CAPM)**")
+    st_k_manual = st.number_input("ผลตอบแทนที่คาดหวัง (Required Return / K %)", value=0.0, step=0.1, format="%.2f", help="ใส่ 0 หากต้องการใช้ค่า K จากสูตร CAPM ตามปกติ") / 100
+    
     if st.button("รีเซ็ตค่าเริ่มต้น"):
         st.cache_data.clear() # Optional but good
         st.rerun()
@@ -59,8 +64,10 @@ if st.sidebar.button("อัปเดตข้อมูลราคาและ�
 def fetch_raw_market_data():
     """
     Fetches raw data for all tickers. Cached for performance.
+    Returns: (results, fetch_timestamp)
     """
     results = []
+    fetch_timestamp = datetime.datetime.now()
     
     # Progress bar setup
     progress_text = "กำลังดึงข้อมูลหุ้น... โปรดรอสักครู่"
@@ -83,9 +90,9 @@ def fetch_raw_market_data():
                 my_bar.progress(completed_count / total_count, text=f"กำลังโหลด {future_to_ticker[future]} ({completed_count}/{total_count})")
             
     my_bar.empty()
-    return results
+    return results, fetch_timestamp
 
-def process_valuations(raw_data, rf, rm, g):
+def process_valuations(raw_data, rf, rm, g, manual_k=0):
     """
     Calculates valuation on raw data with specific parameters.
     """
@@ -93,18 +100,18 @@ def process_valuations(raw_data, rf, rm, g):
     for item in raw_data:
         # Clone item to avoid modifying cached dict in place across reruns (shallow copy often enough but dict copy is safer)
         data_copy = item.copy()
-        evaluated_data = utils.calculate_valuations(data_copy, risk_free_rate=rf, market_return=rm, long_term_growth=g)
+        evaluated_data = utils.calculate_valuations(data_copy, risk_free_rate=rf, market_return=rm, long_term_growth=g, manual_k=manual_k)
         if evaluated_data:
             results.append(evaluated_data)
     return pd.DataFrame(results)
 
 # Load Pipeline
-raw_data_list = fetch_raw_market_data()
+raw_data_list, last_fetch_time = fetch_raw_market_data()
 if not raw_data_list:
     st.error("Failed to fetch data.")
     st.stop()
 
-df = process_valuations(raw_data_list, st_rf, st_rm, st_g)
+df = process_valuations(raw_data_list, st_rf, st_rm, st_g, st_k_manual)
 
 if not df.empty:
     # --- GLOBAL DATA ENRICHMENT ---
@@ -173,6 +180,106 @@ if page == "แดชบอร์ดภาพรวม":
     # Dashboard uses 'df' loaded globally
     
     if not df.empty:
+        # --- LOGIC: ACTION STATUS (Traffic Lights) ---
+        def get_action_status(row):
+            # 1. Buy Signal (Green)
+            # VI Score >= 7 AND Undervalued (MOS > 0) AND Price < DDM
+            # Strong Buy if MOS > 15%
+            score = row.get('VI Score', 0)
+            mos = row.get('margin_of_safety', -100) # Use base MOS (vs Fair) or DDM? Let's use DDM if available
+            ddm = row.get('valuation_ddm', 0)
+            price = row.get('price', 0)
+            
+            # Recalculate MOS based on DDM for consistency with user preference
+            mos_ddm = ((ddm - price) / ddm * 100) if ddm > 0 else -100
+            
+            if score >= 7 and mos_ddm > 0:
+                if mos_ddm > 15:
+                    return "Strong Buy"
+                return "Buy"
+            
+            # 2. Sell Signal (Red)
+            # Overvalued significantly (MOS < -20%) OR Fundamentals Drop (Score < 5)
+            if mos_ddm < -20 or score < 5:
+                return "Sell"
+                
+            # 3. Hold Signal (Yellow)
+            return "Hold"
+
+        df['Action'] = df.apply(get_action_status, axis=1)
+
+        # --- DAILY ACTION SUMMARY ---
+        st.markdown(f"### 📢 สรุปโอกาสลงทุนวันนี้ (Daily Action Summary)")
+        st.caption(f"ข้อมูลล่าสุดเมื่อ: {last_fetch_time.strftime('%Y-%m-%d %H:%M:%S')} (อัปเดตอัตโนมัติทุก 1 ชม.)")
+        
+        with st.expander("ℹ️ อ่านคำแนะนำสัญญาณการลงทุน (Action Guide)"):
+            st.markdown("""
+            **ความหมายของสัญญาณ (Signal Definition):**
+            *   🟢 **Strong Buy (ซื้อสะสม):** หุ้นคุณภาพดี (VI Score ≥ 7) และราคาถูกมาก (MOS > 15%)
+            *   🟢 **Buy (ซื้อ):** หุ้นคุณภาพดี (VI Score ≥ 7) และราคาถูกกว่ามูลค่าจริง (MOS > 0%)
+            *   🟡 **Hold (ถือ/ชะลอการซื้อ):** หุ้นที่ราคาเริ่มเต็มมูลค่า หรือคุณภาพปานกลาง
+            *   🔴 **Sell (ขาย/หลีกเลี่ยง):** หุ้นที่ราคาแพงเกินไป (MOS < -20%) หรือพื้นฐานแย่ลง (VI Score < 5)
+            
+            *หมายเหตุ: เป็นเพียงการคัดกรองเบื้องต้น ควรศึกษาข้อมูลรายตัวเพิ่มเติมก่อนตัดสินใจ*
+            """)
+
+        col_act1, col_act2, col_act3 = st.columns(3)
+        
+        # Filter Lists
+        buy_list = df[df['Action'] == 'Strong Buy']
+        hold_list = df[df['Action'] == 'Hold']
+        sell_list = df[df['Action'] == 'Sell']
+        
+        with col_act1:
+            st.success(f"🟢 **หุ้นน่าสะสม (Strong Buy): {len(buy_list)} ตัว**")
+            if not buy_list.empty:
+                st.dataframe(
+                    buy_list[['symbol', 'price', 'valuation_ddm', 'VI Score']].style.format({'price': '{:.2f}', 'valuation_ddm': '{:.2f}'}), 
+                    hide_index=True,
+                    height=250
+                )
+            else:
+                st.caption("วันนี้ยังไม่มีหุ้นเข้าเกณฑ์ Strong Buy")
+                
+        with col_act2:
+            st.warning(f"🟡 **หุ้นถือรอ/พักเงิน (Hold): {len(hold_list)} ตัว**")
+            if not hold_list.empty:
+                st.dataframe(
+                    hold_list[['symbol', 'price', 'valuation_ddm', 'VI Score']].style.format({'price': '{:.2f}', 'valuation_ddm': '{:.2f}'}), 
+                    hide_index=True,
+                    height=250
+                )
+            else:
+                st.caption(f"หุ้นพื้นฐานดีแต่ราคาเริ่มเต็มมูลค่า")
+
+        with col_act3:
+            st.error(f"🔴 **หุ้นควรระวัง/ขาย (Sell/Avoid): {len(sell_list)} ตัว**")
+            if not sell_list.empty:
+                st.dataframe(
+                    sell_list[['symbol', 'price', 'valuation_ddm', 'VI Score']].style.format({'price': '{:.2f}', 'valuation_ddm': '{:.2f}'}), 
+                    hide_index=True,
+                    height=250
+                )
+            else:
+                st.caption("ไม่มีหุ้นที่ต้องระวังเป็นพิเศษ")
+        
+        st.markdown("---")
+
+        # --- Styling Functions ---
+        def highlight_price_ddm(x):
+            df_st = pd.DataFrame('', index=x.index, columns=x.columns)
+            if 'ราคา' in x.columns and 'DDM' in x.columns:
+                 # DDM > Price -> Green (Undervalued)
+                 # DDM < Price -> Red (Overvalued)
+                 # Only if DDM > 0
+                 mask_valid = (x['DDM'] > 0)
+                 mask_green = mask_valid & (x['DDM'] > x['ราคา'])
+                 mask_red = mask_valid & (x['DDM'] < x['ราคา'])
+                 
+                 df_st.loc[mask_green, 'ราคา'] = 'background-color: #d4edda; color: black' # Light Green
+                 df_st.loc[mask_red, 'ราคา'] = 'background-color: #f8d7da; color: black' # Light Red
+            return df_st
+
         # Key Metrics
         col1, col2, col3 = st.columns(3)
         undervalued_count = df[df['status'] == 'Undervalued'].shape[0]
@@ -361,10 +468,10 @@ if page == "แดชบอร์ดภาพรวม":
             
             # Display Top 10 nicely
             cols_to_show = [
-                'symbol', 'VI Score', 'price', 'fair_value'
+                'symbol', 'VI Score', 'price', 'fair_value', 'valuation_ddm'
             ]
             col_names = [
-                'หุ้น', 'VI Score', 'ราคา', 'Fair'
+                'หุ้น', 'VI Score', 'ราคา', 'Fair', 'DDM'
             ]
             
             # If advanced analysis is done, insert Graham next to Fair Value
@@ -383,20 +490,27 @@ if page == "แดชบอร์ดภาพรวม":
                  cols_to_show.extend(['graham_num', 'vi_price', 'vi_mos'])
                  col_names.extend(['Graham', 'VI Price', 'VI MOS%'])
             else:
-                 # Standard MOS if no Graham
-                 cols_to_show.append('margin_of_safety')
+                 # Standard MOS if no Graham (Override to DDM MOS per user request)
+                 top_picks['mos_ddm'] = top_picks.apply(
+                    lambda row: ((row['valuation_ddm'] - row['price']) / row['valuation_ddm'] * 100) 
+                    if (pd.notna(row['valuation_ddm']) and row['valuation_ddm'] > 0) else -999,
+                    axis=1
+                 )
+                 cols_to_show.append('mos_ddm')
                  col_names.append('MOS%')
 
             # Add remaining base columns
             cols_to_show.extend([
                 'P/E', 'P/BV', 'trailingEps', 'returnOnAssets',
                 'returnOnEquity', 'debtToEquityRatio', 'currentRatio', 'profitMargins',
-                'dividendRate', 'dividendYield_calc', 'VI Score'
+                'dividendRate', 'dividendYield_calc', 'VI Score',
+                'terminal_growth_percent', 'k_percent'
             ])
             col_names.extend([
                 'P/E', 'P/BV', 'EPS', 'ROA%',
                 'ROE%', 'D/E', 'Liquidity', 'NPM%',
-                'ปันผล(฿)', 'ปันผล(%)', 'VI Score'
+                'ปันผล(฿)', 'ปันผล(%)', 'VI Score',
+                'G%', 'K%'
             ])
             
             # Add remaining advanced columns
@@ -414,6 +528,7 @@ if page == "แดชบอร์ดภาพรวม":
             fmt_dict = {
                 'ราคา': '{:.2f}',
                 'Fair': '{:.2f}',
+                'DDM': '{:.2f}',
                 'Graham': '{:.2f}',
                 'VI Price': '{:.2f}',
                 'VI MOS%': '{:.2f}',
@@ -435,7 +550,9 @@ if page == "แดชบอร์ดภาพรวม":
                 'VI Score': '{:.0f}',
                 'FCF%': '{:.2%}',
                 'Z-Score': '{:.2f}',
-                'SGR%': '{:.2%}'
+                'SGR%': '{:.2%}',
+                'G%': '{:.2f}',
+                'K%': '{:.2f}'
             }
             
             # Determine which MOS column to use for gradient
@@ -451,7 +568,8 @@ if page == "แดชบอร์ดภาพรวม":
             st.dataframe(
                 top_display.style.format(fmt_dict)
                 .background_gradient(subset=[mos_col], cmap='Greens')
-                .apply(highlight_vi_price, axis=None),
+                .apply(highlight_vi_price, axis=None)
+                .apply(highlight_price_ddm, axis=None),
                 use_container_width=True
             )
         else:
@@ -470,33 +588,89 @@ if page == "แดชบอร์ดภาพรวม":
         filtered_df['P/BV'] = filtered_df.apply(lambda row: row['price'] / row['bookValue'] if row['bookValue'] > 0 else 0, axis=1)
         
         filtered_df['dividendYield_pct'] = filtered_df.apply(lambda row: row['dividendRate'] / row['price'] if row['price'] > 0 else 0, axis=1)
+
+        # --- Calculate Graham Number & VI Price (Consistency with Super Stocks) ---
+        # Graham Number = Sqrt(22.5 * EPS * BVPS)
+        filtered_df['graham_num'] = filtered_df.apply(
+            lambda row: (22.5 * row['trailingEps'] * row['bookValue'])**0.5 
+            if (row['trailingEps'] > 0 and row['bookValue'] > 0) else 0, 
+            axis=1
+        )
+
+        # VI Price = Average(Fair Value, Graham Number)
+        def calc_vi_price_main(row):
+             vals = []
+             if row['fair_value'] > 0: vals.append(row['fair_value'])
+             if row['graham_num'] > 0: vals.append(row['graham_num'])
+             return sum(vals) / len(vals) if vals else 0
+
+        filtered_df['vi_price'] = filtered_df.apply(calc_vi_price_main, axis=1)
+        
+        # Override MOS% to be based on DDM per user request
+        # If DDM is invalid or 0, MOS% will be -100 or NaN (handled by fillna before?)
+        filtered_df['mos_ddm'] = filtered_df.apply(
+            lambda row: ((row['valuation_ddm'] - row['price']) / row['valuation_ddm'] * 100) 
+            if (pd.notna(row['valuation_ddm']) and row['valuation_ddm'] > 0) else -999, # -999 for N/A
+            axis=1
+        )
         
         display_df = filtered_df[[
-            'symbol', 'price', 'fair_value', 'margin_of_safety', 
+            'symbol', 'Action', 'price', 'fair_value', 'valuation_ddm', 'graham_num', 'vi_price', 'mos_ddm', 
             'P/E', 'pegRatio', 'P/BV', 'trailingEps', 
             'returnOnAssets', 'returnOnEquity', 
             'grossMargins', 'operatingMargins', 'profitMargins',
             'debtToEquityRatio', 'currentRatio', 'quickRatio',
             'revenueGrowth', 'enterpriseToEbitda',
-            'dividendRate', 'dividendYield_pct', 'Quality Score'
+            'dividendRate', 'dividendYield_pct', 'Quality Score',
+            'terminal_growth_percent', 'k_percent'
         ]].copy()
         
         # Rename columns for readable headers
         display_df.columns = [
-            'หุ้น', 'ราคา', 'Fair', 'MOS%',
+            'หุ้น', 'สถานะ', 'ราคา', 'Fair', 'DDM', 'Graham', 'VI Price', 'MOS%',
             'P/E', 'PEG', 'P/BV', 'EPS',
             'ROA%', 'ROE%',
             'GPM%', 'OPM%', 'NPM%',
             'D/E', 'Liquidity', 'Quick',
             'Growth%', 'EV/EBITDA',
-            'ปันผล(฿)', 'ปันผล(%)', 'Q-Score'
+            'ปันผล(฿)', 'ปันผล(%)', 'Q-Score',
+            'G%', 'K%'
         ]
         
+        # Determine Fair Price column to highlight (Fair or VI Price if exists)
+        # Note: In main screener we only have 'Fair' (fair_value).
+        
+        def highlight_fair_main(x):
+            df_st = pd.DataFrame('', index=x.index, columns=x.columns)
+            if 'VI Price' in x.columns:
+                df_st['VI Price'] = 'background-color: #fff9c4; color: black; font-weight: bold'
+            
+            # Highlight Action Column
+            if 'สถานะ' in x.columns:
+                # Strong Buy -> Dark Green
+                # Buy -> Light Green
+                # Sell -> Light Red
+                # Hold -> Light Yellow
+                mask_sbuy = x['สถานะ'] == 'Strong Buy'
+                mask_buy = x['สถานะ'] == 'Buy'
+                mask_sell = x['สถานะ'] == 'Sell'
+                mask_hold = x['สถานะ'] == 'Hold'
+                
+                df_st.loc[mask_sbuy, 'สถานะ'] = 'background-color: #10b981; color: white; font-weight: bold' # Emerald 500
+                df_st.loc[mask_buy, 'สถานะ'] = 'background-color: #d1fae5; color: #065f46; font-weight: bold' # Emerald 100
+                df_st.loc[mask_sell, 'สถานะ'] = 'background-color: #fee2e2; color: #991b1b; font-weight: bold' # Red 100
+                df_st.loc[mask_hold, 'สถานะ'] = 'background-color: #fef3c7; color: #92400e' # Amber 100
+                
+            return df_st
+
         # Apply formatting
         st.dataframe(
             display_df.style.format({
                 'ราคา': '{:.2f}', 
                 'Fair': '{:.2f}', 
+                'DDM': '{:.2f}',
+                'Graham': '{:.2f}',
+                'VI Price': '{:.2f}',
                 'MOS%': '{:.2f}',
                 'P/E': '{:.2f}',
                 'PEG': '{:.2f}',
@@ -513,8 +687,13 @@ if page == "แดชบอร์ดภาพรวม":
                 'Growth%': '{:.2%}',
                 'EV/EBITDA': '{:.2f}',
                 'ปันผล(฿)': '{:.2f}',
-                'ปันผล(%)': '{:.2%}'
-            }).apply(lambda x: ['background-color: rgba(16, 185, 129, 0.2)' if x['MOS%'] > 15 else '' for i in x], axis=1),
+                'ปันผล(%)': '{:.2%}',
+                'G%': '{:.2f}',
+                'K%': '{:.2f}'
+            })
+            .apply(lambda x: ['background-color: rgba(16, 185, 129, 0.2)' if x['MOS%'] > 15 else '' for i in x], axis=1)
+            .apply(highlight_fair_main, axis=None)
+            .apply(highlight_price_ddm, axis=None),
             use_container_width=True,
             height=600
         )
@@ -522,30 +701,51 @@ if page == "แดชบอร์ดภาพรวม":
         st.info("💡 **เกร็ดความรู้:** หุ้นที่มี 'MOS (%)' เขียว (> 15%) คือหุ้นที่มีส่วนลดจากมูลค่าจริงมาก")
         
         with st.expander("📖 อธิบายความหมายอัตราส่วนทางการเงิน (Financial Glossary)"):
-            st.markdown("""
-            *   **P/E (Price-to-Earnings Ratio):** ความถูกแพงของหุ้นเทียบกับกำไรสุทธิ (ค่ายิ่งต่ำยิ่งถูก)
-            *   **PEG (P/E to Growth):** P/E เทียบกับการเติบโตของกำไร (ค่า < 1 แสดงว่าหุ้นยังถูกเมื่อเทียบกับการเติบโต)
-            *   **P/BV (Price-to-Book Ratio):** ราคาหุ้นเทียบกับมูลค่าทางบัญชี (ค่ายิ่งต่ำยิ่งถูก, < 1 แสดงว่าซื้อต่ำกว่ามูลค่าสินทรัพย์)
-            *   **EPS (Earnings Per Share):** กำไรสุทธิต่อหุ้น 1 หุ้น (ยิ่งมากยิ่งดี)
-            *   **ROA (Return on Assets):** ความสามารถในการทำกำไรจากสินทรัพย์ที่มี (ยิ่งสูงยิ่งดี, บ่งบอกประสิทธิภาพผู้บริหาร)
-            *   **ROE (Return on Equity):** ผลตอบแทนต่อส่วนของผู้ถือหุ้น (ยิ่งสูงยิ่งดี, Warren Buffett ชอบ > 15%)
-            *   **GPM (Gross Profit Margin):** อัตรากำไรขั้นต้น (ขายของได้กำไรกี่ % ก่อนหักค่าใช้จ่ายบริหาร)
-            *   **OPM (Operating Profit Margin):** อัตรากำไรจากการดำเนินงาน (วัดประสิทธิภาพธุรกิจหลัก)
-            *   **NPM (Net Profit Margin):** อัตรากำไรสุทธิ (กำไรบรรทัดสุดท้าย / รายได้, ยิ่งสูงยิ่งดี)
-            *   **D/E (Debt-to-Equity Ratio):** หนี้สินต่อทุน (ค่ายิ่งต่ำยิ่งปลอดภัย, ไม่ควรเกิน 2 เท่า)
-            *   **Current Ratio:** อัตราส่วนสภาพคล่อง (สินทรัพย์หมุนเวียน / หนี้สินหมุนเวียน, ควร > 1.5 เท่า)
-            *   **Quick Ratio:** สภาพคล่องหมุนเวียนเร็ว (ตัดสต็อกสินค้าออก, วัดความสามารถชำระหนี้ระยะสั้นแบบเข้มข้น)
-            *   **Rev Growth:** อัตราการเติบโตของรายได้ (เทียบปีต่อปี)
-            *   **EV/EBITDA:** มูลค่ากิจการเทียบกับกำไรเงินสด (ใช้ดูความถูกแพงแทน P/E ได้ดีในหุ้นที่มีค่าเสื่อมเยอะ)
-            *   **ปันผล (Dividend):** เงินปันผลที่จ่ายให้ผู้ถือหุ้น (บาท)
-            *   **F-Score (Piotroski F-Score):** คะแนนสุขภาพทางการเงิน 9 ด้าน (9 = แข็งแกร่งที่สุด, < 4 = อ่อนแอ)
-            *   **ROC (Return on Capital):** ผลตอบแทนจากเงินลงทุนดำเนินงาน (หัวใจของ Magic Formula, ยิ่งสูงยิ่งดี)
-            *   **E.Yield (Earnings Yield):** ผลตอบแทนกำไรเมื่อเทียบกับมูลค่ากิจการ (ส่วนกลับของ P/E, ยิ่งสูงยิ่งคุ้มค่า)
-            *   **Super Score:** คะแนนรวมพิเศษจากโปรแกรมนี้ (เต็ม 100) คำนวณจาก MOS, F-Score, Magic Rank, ROE และปันผล
-            *   **Graham Number:** ราคาที่เหมาะสมตามสูตร Benjamin Graham (บิดาแห่ง VI) เน้นสินทรัพย์และกำไร
-            *   **FCF Yield (Free Cash Flow Yield):** ผลตอบแทนจากกระแสเงินสดอิสระ (เงินสดจริงที่บริษัททำได้) เทียบกับมูลค่ากิจการ
-            *   **Z-Score (Altman Z-Score):** ดัชนีชี้วัดความเสี่ยงล้มละลาย (Safe > 2.99, Distress < 1.81) ช่วยกรองหุ้นเน่า
-            *   **SGR (Sustainable Growth Rate):** อัตราการเติบโตที่ยั่งยืนด้วยเงินทุนตัวเอง (ไม่กู้เพิ่ม/ไม่เพิ่มทุน)
+            st.markdown(r"""
+            ### 🧮 สูตรการคำนวณและคำอธิบาย (Formulas & Definitions)
+
+            #### 1. ความถูกแพง (Valuation)
+            *   **P/E (Price-to-Earnings Ratio):** ความถูกแพงของหุ้นเทียบกับกำไรสุทธิ
+                $$ \text{P/E} = \frac{\text{Price}}{\text{EPS}} $$
+            *   **PEG (P/E to Growth):** P/E เทียบกับการเติบโตของกำไร
+                $$ \text{PEG} = \frac{\text{P/E}}{\text{Earnings Growth (\%)}} $$
+            *   **P/BV (Price-to-Book Ratio):** ราคาหุ้นเทียบกับมูลค่าทางบัญชี
+                $$ \text{P/BV} = \frac{\text{Price}}{\text{Book Value per Share}} $$
+            *   **EV/EBITDA:** มูลค่ากิจการเทียบกับกำไรเงินสด
+                $$ \text{EV/EBITDA} = \frac{\text{Market Cap + Debt - Cash}}{\text{EBITDA}} $$
+
+            #### 2. ประสิทธิภาพ (Efficiency)
+            *   **ROE (Return on Equity):** ผลตอบแทนต่อส่วนของผู้ถือหุ้น
+                $$ \text{ROE} = \frac{\text{Net Income}}{\text{Shareholders' Equity}} \times 100 $$
+            *   **ROA (Return on Assets):** ความสามารถในการทำกำไรจากสินทรัพย์
+                $$ \text{ROA} = \frac{\text{Net Income}}{\text{Total Assets}} \times 100 $$
+            *   **ROC (Return on Capital):** ผลตอบแทนจากเงินลงทุนดำเนินงาน (Magic Formula)
+                $$ \text{ROC} = \frac{\text{EBIT}}{\text{Net Working Capital} + \text{Net Fixed Assets}} $$
+
+            #### 3. สุขภาพทางการเงิน (Health)
+            *   **D/E (Debt-to-Equity Ratio):** หนี้สินต่อทุน
+                $$ \text{D/E} = \frac{\text{Total Debt}}{\text{Shareholders' Equity}} $$
+            *   **Current Ratio:** สภาพคล่องหมุนเวียน
+                $$ \text{Current Ratio} = \frac{\text{Current Assets}}{\text{Current Liabilities}} $$
+            *   **Z-Score (Altman Z-Score):** ดัชนีชี้วัดความเสี่ยงล้มละลาย (Manufacturing Model)
+                $$ Z = 1.2A + 1.4B + 3.3C + 0.6D + 1.0E $$
+                (A=WC/TA, B=RE/TA, C=EBIT/TA, D=MktCap/Liab, E=Sales/TA)
+
+            #### 4. การประเมินมูลค่า (Valuation Models)
+            *   **Fair Price (ราคาเหมาะสม):** ค่าเฉลี่ยของ 3 วิธี (DDM, Target P/E, Target P/BV)
+            *   **DDM (Dividend Discount Model):** คิดลดเงินปันผล 2 ช่วง (5 ปีแรก + Terminal Value)
+                $$ \text{Value} = \sum_{t=1}^{5} \frac{D_0(1+g)^t}{(1+k)^t} + \frac{D_5(1+g)}{(k-g)(1+k)^5} $$
+            *   **Graham Number:** ราคาที่เหมาะสมตามสูตร Benjamin Graham
+                $$ \text{Graham Num} = \sqrt{22.5 \times \text{EPS} \times \text{BVPS}} $$
+            *   **VI Price:** ราคาเหมาะสมแบบ VI ประยุกต์
+                $$ \text{VI Price} = \frac{\text{Fair Price} + \text{Graham Number}}{2} $$
+
+            #### 5. ตัวแปรสมมติฐาน (Assumptions)
+            *   **G% (Terminal Growth Rate):** อัตราการเติบโตระยะยาวที่ใช้ในสูตร DDM และ Target Multiples
+            *   **K% (Required Return):** ผลตอบแทนคาดหวัง (Discount Rate) คำนวณจาก CAPM หรือกำหนดเอง
+                $$ k = R_f + \beta (R_m - R_f) $$
+            *   **MOS% (Margin of Safety):** ส่วนเผื่อความปลอดภัย (เทียบกับ DDM)
+                $$ \text{MOS\%} = \frac{\text{DDM} - \text{Price}}{\text{DDM}} \times 100 $$
             """)
         
         # --- Display Advanced Results if available (Optional: Keep it hidden or move to debug) ---
@@ -913,15 +1113,65 @@ elif page == "แนะนำพอร์ตการลงทุน":
     capital = st.number_input("เงินลงทุนตั้งต้น (บาท)", min_value=1000, value=100000, step=1000, format="%d")
     st.caption(f"💰 จำนวนเงินที่ระบุ: **{capital:,.0f}** บาท")
     
-    # Portfolio Mix (Thai Keys)
-    allocation = {
-        "พันธบัตร / ตราสารหนี้ (Fixed Income)": 0.40,
-        "หุ้นไทยขนาดใหญ่ (SET50)": 0.15,
-        "หุ้นต่างประเทศ (Global Stocks)": 0.15,
-        "หุ้นเล็ก / หุ้นเติบโต (Growth)": 0.10,
-        "ตลาดเกิดใหม่ (Emerging Markets)": 0.10,
-        "กองทุนอสังหาฯ (REITs)": 0.10
-    }
+    # Risk Profile Selector
+    st.markdown("---")
+    risk_level = st.radio("ระดับความเสี่ยงที่รับได้ (Risk Profile)", ["ต่ำ (Conservative)", "ปานกลาง (Moderate)", "สูง (Aggressive)"], index=1)
+    
+    # Define Allocations based on Risk
+    if "ต่ำ" in risk_level:
+        # Conservative: Bonds 60%, Large Cap 20%, REITs 20%
+        allocation = {
+            "พันธบัตร / ตราสารหนี้ (Fixed Income)": 0.60,
+            "หุ้นไทยขนาดใหญ่ (SET50)": 0.20,
+            "กองทุนอสังหาฯ (REITs)": 0.20,
+            "หุ้นต่างประเทศ (Global Stocks)": 0.00,
+            "หุ้นเล็ก / หุ้นเติบโต (Growth)": 0.00,
+            "ตลาดเกิดใหม่ (Emerging Markets)": 0.00
+        }
+        alloc_rules = {
+            "Fixed Income": 0.60,
+            "Thai Large Cap": 0.20,
+            "REITs": 0.20,
+            "Global Stocks": 0.00,
+            "Growth Stocks": 0.00,
+            "Emerging Markets": 0.00
+        }
+    elif "สูง" in risk_level:
+        # Aggressive: Stocks 70% (Global 30%, Thai 20%, Growth 10%, EM 10%), Bonds 20%, REITs 10%
+        allocation = {
+            "หุ้นต่างประเทศ (Global Stocks)": 0.30,
+            "หุ้นไทยขนาดใหญ่ (SET50)": 0.20,
+            "พันธบัตร / ตราสารหนี้ (Fixed Income)": 0.20,
+            "หุ้นเล็ก / หุ้นเติบโต (Growth)": 0.10,
+            "ตลาดเกิดใหม่ (Emerging Markets)": 0.10,
+            "กองทุนอสังหาฯ (REITs)": 0.10
+        }
+        alloc_rules = {
+            "Global Stocks": 0.30,
+            "Thai Large Cap": 0.20,
+            "Fixed Income": 0.20,
+            "Growth Stocks": 0.10,
+            "Emerging Markets": 0.10,
+            "REITs": 0.10
+        }
+    else:
+        # Moderate (Default): Bonds 40%, Stocks 30% (Thai 15, Global 15), REITs 10%, Growth 10%, EM 10%
+        allocation = {
+            "พันธบัตร / ตราสารหนี้ (Fixed Income)": 0.40,
+            "หุ้นไทยขนาดใหญ่ (SET50)": 0.15,
+            "หุ้นต่างประเทศ (Global Stocks)": 0.15,
+            "หุ้นเล็ก / หุ้นเติบโต (Growth)": 0.10,
+            "ตลาดเกิดใหม่ (Emerging Markets)": 0.10,
+            "กองทุนอสังหาฯ (REITs)": 0.10
+        }
+        alloc_rules = {
+            "Fixed Income": 0.40,
+            "Thai Large Cap": 0.15,
+            "Global Stocks": 0.15,
+            "Growth Stocks": 0.10,
+            "Emerging Markets": 0.10,
+            "REITs": 0.10
+        }
     
     if st.button("คำนวณสัดส่วนการลงทุน"):
         amounts = utils.calculate_portfolio(capital, allocation)
@@ -996,169 +1246,224 @@ elif page == "แนะนำพอร์ตการลงทุน":
             st.markdown("##### 🌍 ตลาดเกิดใหม่ (10%)")
             st.markdown("- **เน้น:** อินเดีย, เวียดนาม, อินโดฯ\n- **กองทุน:** `K-INDX` (อินเดีย), `ASP-VIET`")
 
-        # --- PORTFOLIO SIMULATOR ---
-        st.markdown("---")
-        st.subheader("🛠️ จำลองพอร์ตหุ้น (Portfolio Simulator)")
-        st.caption("จัดพอร์ตตาม Asset Allocation ที่แนะนำ เลือกสินทรัพย์ในแต่ละกลุ่มเพื่อคำนวณผลตอบแทนคาดหวัง")
-
-        # Helper Data for Non-Stock Assets (Estimated Yields & Proxy Prices)
-        # Price is dummy 10.0 just for calculating quantity roughly if needed, mostly for amount allocation
-        ASSET_PROXY = {
-            "BOND": {"price": 10.0, "yield": 0.025}, # 2.5% Yield
-            "GLOBAL": {"price": 10.0, "yield": 0.01}, # 1.0% Yield (Growth focus)
-            "EM": {"price": 10.0, "yield": 0.02}, # 2.0% Yield
-        }
-
-        # Categories mapping to Logic
-        # 1. Fixed Income (40%) -> Manual Selection (Mock List)
-        # 2. Thai Large (15%) -> SET50 from df
-        # 3. Global (15%) -> Manual Selection (Mock List)
-        # 4. REITs (10%) -> REITs from df (Filter by name/sector?)
-        # 5. Growth (10%) -> Non-SET50 from df
-        # 6. Emerging (10%) -> Manual Selection (Mock List)
-
-        sim_budget = st.number_input("เงินลงทุนสำหรับพอร์ตนี้ (บาท)", min_value=1000.0, value=float(capital), step=1000.0)
+    # --- PORTFOLIO SIMULATOR ---
+    st.markdown("---")
+    st.subheader("🛠️ จำลองพอร์ตหุ้น (Portfolio Simulator)")
+    
+    # Dividend Goal Input
+    with st.expander("🎯 เป้าหมายเงินปันผล (Dividend Goal)", expanded=True):
+        st.caption("กรองรายชื่อหุ้นเพื่อแสดงเฉพาะตัวที่ให้ปันผลตามเป้าหมาย (เฉพาะหุ้นไทยและ REITs)")
+        target_yield_req = st.number_input("ต้องการปันผลขั้นต่ำ (%)", min_value=0.0, max_value=20.0, value=0.0, step=0.5, help="ใส่ 0 หากไม่ต้องการกรอง")
         
-        # --- SELECTION SECTION ---
-        st.markdown("#### 1. เลือกสินทรัพย์เข้าพอร์ต")
-        
-        col_sel1, col_sel2 = st.columns(2)
-        
-        selected_assets = {} # Store {category: [list of assets]}
+        if target_yield_req > 0:
+            st.success(f"✅ ระบบจะกรองและเลือกหุ้นที่ปันผล > {target_yield_req}% ให้โดยอัตโนมัติ")
+    
+    st.caption("จัดพอร์ตตาม Asset Allocation ที่แนะนำ เลือกสินทรัพย์ในแต่ละกลุ่มเพื่อคำนวณผลตอบแทนคาดหวัง")
 
-        with col_sel1:
-            st.markdown("**1. ตราสารหนี้ & พันธบัตร (40%)**")
-            opts_bond = ["พันธบัตรรัฐบาล (Gov Bond)", "หุ้นกู้เอกชน (Corp Bond)", "K-FIXED", "SCBFIXED", "TMBABF"]
-            selected_assets["Fixed Income"] = st.multiselect("เลือกกองทุน/ตราสารหนี้:", opts_bond, default=["พันธบัตรรัฐบาล (Gov Bond)", "K-FIXED"])
-            
-            st.markdown("**2. หุ้นไทยขนาดใหญ่ (15%)**")
-            # Filter Large Cap (>50B)
-            large_cap_list = df[df['marketCap'] > 50_000_000_000]['symbol'].tolist()
-            def_large = [x for x in ['ADVANC', 'PTT', 'AOT', 'KBANK', 'CPALL'] if x in large_cap_list]
-            selected_assets["Thai Large Cap"] = st.multiselect("เลือกหุ้นขนาดใหญ่ (SET50):", sorted(large_cap_list), default=def_large)
-            
-            st.markdown("**3. หุ้นต่างประเทศ (15%)**")
-            opts_global = ["S&P500 (SPX)", "Nasdaq-100 (NDX)", "ONE-ULTRAP", "SCBNDQ", "K-CHANGE", "TMBGQG"]
-            selected_assets["Global Stocks"] = st.multiselect("เลือกกองทุนต่างประเทศ:", opts_global, default=["S&P500 (SPX)", "ONE-ULTRAP"])
+    # Helper Data for Non-Stock Assets (Estimated Yields & Proxy Prices)
+    # Price is dummy 10.0 just for calculating quantity roughly if needed, mostly for amount allocation
+    ASSET_PROXY = {
+        "BOND": {"price": 10.0, "yield": 0.025}, # 2.5% Yield
+        "GLOBAL": {"price": 10.0, "yield": 0.01}, # 1.0% Yield (Growth focus)
+        "EM": {"price": 10.0, "yield": 0.02}, # 2.0% Yield
+    }
+    
+    # Calculate Yield for all stocks in DF for filtering
+    # Reuse logic from simulator loop
+    def get_stock_yield(row):
+        price = row.get('price', 0)
+        div_yield = 0
+        d_rate = row.get('dividendRate', 0)
+        if price > 0 and pd.notnull(d_rate) and d_rate > 0:
+            div_yield = d_rate / price
+        else:
+            y_val = row.get('dividendYield', 0)
+            if pd.notnull(y_val) and y_val > 0:
+                if y_val > 1: div_yield = y_val / 100.0
+                else: div_yield = y_val
+        return div_yield * 100 # Return as percentage
 
-        with col_sel2:
-            st.markdown("**4. กองทุนอสังหาฯ (10%)**")
-            # Filter REITs (Approximate by Name if Sector not clean, or manual list intersection)
-            # Let's use a broad filter or manual known list + allow all
-            # Try to find Property Fund in df if possible, else use known list
-            # For safety, list all but pre-select known REITs
-            known_reits = ['CPNREIT', 'WHAIR', 'FTREIT', 'ALLY', 'DIF', 'TFFIF', 'LHHOTEL', 'GVREIT']
-            valid_reits = [x for x in known_reits if x in df['symbol'].values]
-            selected_assets["REITs"] = st.multiselect("เลือกกองทุนอสังหาฯ (REITs):", sorted(df['symbol'].unique()), default=valid_reits)
+    # Create Filtered Lists
+    # Filter Logic: Yield >= target_yield_req
+    
+    # 1. Thai Large Cap
+    large_cap_all = df[df['marketCap'] > 50_000_000_000]['symbol'].tolist()
+    
+    # 2. Growth Stocks
+    small_cap_all = df[df['marketCap'] <= 50_000_000_000]['symbol'].tolist()
+    
+    # 3. REITs (Approximate)
+    known_reits = ['CPNREIT', 'WHAIR', 'FTREIT', 'ALLY', 'DIF', 'TFFIF', 'LHHOTEL', 'GVREIT', 'AIMIRT', 'PROSPECT']
+    reit_all = [x for x in known_reits if x in df['symbol'].values]
+    
+    # Apply Filter if Target > 0
+    if target_yield_req > 0:
+        # Pre-calc yields map
+        yield_map = {row['symbol']: get_stock_yield(row) for _, row in df.iterrows()}
+        
+        large_cap_list = [s for s in large_cap_all if yield_map.get(s, 0) >= target_yield_req]
+        small_cap_list = [s for s in small_cap_all if yield_map.get(s, 0) >= target_yield_req]
+        reit_list = [s for s in reit_all if yield_map.get(s, 0) >= target_yield_req]
+        
+        # Auto-select defaults: Top 3 yielders in each category
+        def get_top_yielders(tickers, n=3):
+            sorted_t = sorted(tickers, key=lambda x: yield_map.get(x, 0), reverse=True)
+            return sorted_t[:n]
             
-            st.markdown("**5. หุ้นเติบโต / หุ้นเล็ก (10%)**")
-            # Filter Small Cap (<50B)
-            small_cap_list = df[df['marketCap'] <= 50_000_000_000]['symbol'].tolist()
-            def_small = [x for x in ['JMT', 'FORTH', 'XO', 'SIS', 'COM7'] if x in small_cap_list]
-            selected_assets["Growth Stocks"] = st.multiselect("เลือกหุ้นเติบโต/หุ้นเล็ก:", sorted(small_cap_list), default=def_small)
-            
-            st.markdown("**6. ตลาดเกิดใหม่ (10%)**")
-            opts_em = ["Vietnam ETF", "India ETF", "China Tech", "K-INDX", "ASP-VIET", "E1VFVN3001"]
-            selected_assets["Emerging Markets"] = st.multiselect("เลือกกองทุนตลาดเกิดใหม่:", opts_em, default=["Vietnam ETF", "K-INDX"])
+        def_large = get_top_yielders(large_cap_list)
+        def_small = get_top_yielders(small_cap_list)
+        def_reit = get_top_yielders(reit_list)
+        
+    else:
+        # No filter
+        large_cap_list = large_cap_all
+        small_cap_list = small_cap_all
+        reit_list = sorted(df['symbol'].unique()) # Allow all for REITs if no filter, or stick to known? Stick to known + valid
+        reit_list = [x for x in df['symbol'].unique() if any(k in x for k in ['REIT', 'PF', 'IF']) or x in known_reits] # Simple heuristic
+        
+        # Original Defaults
+        def_large = [x for x in ['ADVANC', 'PTT', 'AOT', 'KBANK', 'CPALL'] if x in large_cap_list]
+        def_small = [x for x in ['JMT', 'FORTH', 'XO', 'SIS', 'COM7'] if x in small_cap_list]
+        def_reit = [x for x in known_reits if x in df['symbol'].values]
 
-        # --- CALCULATION ---
-        # Allocation Rules
-        alloc_rules = {
-            "Fixed Income": 0.40,
-            "Thai Large Cap": 0.15,
-            "Global Stocks": 0.15,
-            "REITs": 0.10,
-            "Growth Stocks": 0.10,
-            "Emerging Markets": 0.10
-        }
+    # Categories mapping to Logic
+    # 1. Fixed Income (40%) -> Manual Selection (Mock List)
+    # 2. Thai Large (15%) -> SET50 from df
+    # 3. Global (15%) -> Manual Selection (Mock List)
+    # 4. REITs (10%) -> REITs from df (Filter by name/sector?)
+    # 5. Growth (10%) -> Non-SET50 from df
+    # 6. Emerging (10%) -> Manual Selection (Mock List)
+
+    sim_budget = st.number_input("เงินลงทุนสำหรับพอร์ตนี้ (บาท)", min_value=1000.0, value=float(capital), step=1000.0)
+    
+    # --- SELECTION SECTION ---
+    st.markdown("#### 1. เลือกสินทรัพย์เข้าพอร์ต")
+    
+    col_sel1, col_sel2 = st.columns(2)
+    
+    selected_assets = {} # Store {category: [list of assets]}
+
+    with col_sel1:
+        st.markdown("**1. ตราสารหนี้ & พันธบัตร (Fixed Income)**")
+        opts_bond = ["พันธบัตรรัฐบาล (Gov Bond)", "หุ้นกู้เอกชน (Corp Bond)", "K-FIXED", "SCBFIXED", "TMBABF"]
+        selected_assets["Fixed Income"] = st.multiselect("เลือกกองทุน/ตราสารหนี้:", opts_bond, default=["พันธบัตรรัฐบาล (Gov Bond)", "K-FIXED"])
         
-        sim_rows = []
+        st.markdown(f"**2. หุ้นไทยขนาดใหญ่ (Thai Large Cap) {f'(Yield > {target_yield_req}%)' if target_yield_req > 0 else ''}**")
+        selected_assets["Thai Large Cap"] = st.multiselect("เลือกหุ้นขนาดใหญ่ (SET50):", sorted(large_cap_list), default=def_large)
         
-        for cat, pct in alloc_rules.items():
-            cat_budget = sim_budget * pct
-            picks = selected_assets.get(cat, [])
-            
-            if picks:
-                budget_per_asset = cat_budget / len(picks)
-                for asset in picks:
-                    # Determine Price & Yield
-                    price = 0
+        st.markdown("**3. หุ้นต่างประเทศ (Global Stocks)**")
+        opts_global = ["S&P500 (SPX)", "Nasdaq-100 (NDX)", "ONE-ULTRAP", "SCBNDQ", "K-CHANGE", "TMBGQG"]
+        selected_assets["Global Stocks"] = st.multiselect("เลือกกองทุนต่างประเทศ:", opts_global, default=["S&P500 (SPX)", "ONE-ULTRAP"])
+
+    with col_sel2:
+        st.markdown(f"**4. กองทุนอสังหาฯ (REITs) {f'(Yield > {target_yield_req}%)' if target_yield_req > 0 else ''}**")
+        selected_assets["REITs"] = st.multiselect("เลือกกองทุนอสังหาฯ (REITs):", sorted(reit_list), default=def_reit)
+        
+        st.markdown(f"**5. หุ้นเติบโต / หุ้นเล็ก (Growth) {f'(Yield > {target_yield_req}%)' if target_yield_req > 0 else ''}**")
+        selected_assets["Growth Stocks"] = st.multiselect("เลือกหุ้นเติบโต/หุ้นเล็ก:", sorted(small_cap_list), default=def_small)
+        
+        st.markdown("**6. ตลาดเกิดใหม่ (Emerging Markets)**")
+        opts_em = ["Vietnam ETF", "India ETF", "China Tech", "K-INDX", "ASP-VIET", "E1VFVN3001"]
+        selected_assets["Emerging Markets"] = st.multiselect("เลือกกองทุนตลาดเกิดใหม่:", opts_em, default=["Vietnam ETF", "K-INDX"])
+
+    # --- CALCULATION ---
+    # Allocation Rules (Moved up to dynamic section based on Risk Level)
+    # alloc_rules variable is already defined above
+    
+    sim_rows = []
+    
+    for cat, pct in alloc_rules.items():
+        cat_budget = sim_budget * pct
+        picks = selected_assets.get(cat, [])
+        
+        if picks:
+            budget_per_asset = cat_budget / len(picks)
+            for asset in picks:
+                # Determine Price & Yield
+                price = 0
+                div_yield = 0
+                
+                # Check if it's a real stock in df
+                if asset in df['symbol'].values:
+                    row = df[df['symbol'] == asset].iloc[0]
+                    price = row.get('price', 0)
+                    
+                    # Try to get yield from multiple sources
                     div_yield = 0
                     
-                    # Check if it's a real stock in df
-                    if asset in df['symbol'].values:
-                        row = df[df['symbol'] == asset].iloc[0]
-                        price = row.get('price', 0)
-                        
-                        # Try to get yield from multiple sources
-                        div_yield = 0
-                        
-                        # 1. Try explicit dividendYield
+                    # 1. Prioritize calculated from Dividend Rate (Most reliable: Rate / Price)
+                    d_rate = row.get('dividendRate', 0)
+                    if price > 0 and pd.notnull(d_rate) and d_rate > 0:
+                        div_yield = d_rate / price
+                    else:
+                        # 2. Fallback to explicit dividendYield
                         y_val = row.get('dividendYield', 0)
                         if pd.notnull(y_val) and y_val > 0:
-                            div_yield = y_val
-                        
-                        # 2. If 0, try dividendRate / price
-                        if div_yield == 0 and price > 0:
-                            d_rate = row.get('dividendRate', 0)
-                            if pd.notnull(d_rate) and d_rate > 0:
-                                div_yield = d_rate / price
+                            # Normalize scale: If > 1, assume it's percentage (e.g. 4.5 means 4.5%), so divide by 100
+                            # If < 1, assume it's decimal (e.g. 0.045 means 4.5%)
+                            if y_val > 1:
+                                div_yield = y_val / 100.0
+                            else:
+                                div_yield = y_val
+                else:
+                    # Fallback to Proxy
+                    if cat == "Fixed Income":
+                        price = ASSET_PROXY["BOND"]["price"]
+                        div_yield = ASSET_PROXY["BOND"]["yield"]
+                    elif cat == "Global Stocks":
+                        price = ASSET_PROXY["GLOBAL"]["price"]
+                        div_yield = ASSET_PROXY["GLOBAL"]["yield"]
+                    elif cat == "Emerging Markets":
+                        price = ASSET_PROXY["EM"]["price"]
+                        div_yield = ASSET_PROXY["EM"]["yield"]
                     else:
-                        # Fallback to Proxy
-                        if cat == "Fixed Income":
-                            price = ASSET_PROXY["BOND"]["price"]
-                            div_yield = ASSET_PROXY["BOND"]["yield"]
-                        elif cat == "Global Stocks":
-                            price = ASSET_PROXY["GLOBAL"]["price"]
-                            div_yield = ASSET_PROXY["GLOBAL"]["yield"]
-                        elif cat == "Emerging Markets":
-                            price = ASSET_PROXY["EM"]["price"]
-                            div_yield = ASSET_PROXY["EM"]["yield"]
-                        else:
-                             # Default fallback
-                            price = 10.0
-                            div_yield = 0.0
-                    
-                    qty = int(budget_per_asset / price) if price > 0 else 0
-                    actual_invest = qty * price
-                    div_amt = actual_invest * div_yield
-                    
-                    sim_rows.append({
-                        "หมวดหมู่ (Category)": cat,
-                        "ชื่อ (Asset)": asset,
-                        "จำนวนเงิน (Invested)": actual_invest,
-                        "จำนวนหุ้น (Qty)": qty,
-                        "%ปันผล (Yield)": div_yield * 100,
-                        "ปันผล (บาท)": div_amt
-                    })
+                         # Default fallback
+                        price = 10.0
+                        div_yield = 0.0
+                
+                qty = int(budget_per_asset / price) if price > 0 else 0
+                actual_invest = qty * price
+                div_amt = actual_invest * div_yield
+                
+                sim_rows.append({
+                    "หมวดหมู่ (Category)": cat,
+                    "ชื่อ (Asset)": asset,
+                    "จำนวนเงิน (Invested)": actual_invest,
+                    "จำนวนหุ้น (Qty)": qty,
+                    "%ปันผล (Yield)": div_yield * 100,
+                    "ปันผล (บาท)": div_amt
+                })
+    
+    if sim_rows:
+        # Move out of columns to ensure full width
+        st.markdown("---")
+        st.markdown("#### 2. ตารางสรุปพอร์ตโฟลิโอ (Portfolio Summary)")
+        df_sim_final = pd.DataFrame(sim_rows)
         
-        if sim_rows:
-            st.markdown("#### 2. ตารางสรุปพอร์ตโฟลิโอ (Portfolio Summary)")
-            df_sim_final = pd.DataFrame(sim_rows)
-            
-            # Show DataFrame
-            st.dataframe(
-                df_sim_final.style.format({
-                    'จำนวนเงิน (Invested)': '{:,.2f}',
-                    'จำนวนหุ้น (Qty)': '{:,}',
-                    '%ปันผล (Yield)': '{:.2f}%',
-                    'ปันผล (บาท)': '{:,.2f}'
-                }),
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Summary Metrics
-            total_inv = df_sim_final['จำนวนเงิน (Invested)'].sum()
-            total_div = df_sim_final['ปันผล (บาท)'].sum()
-            avg_yield_port = (total_div / total_inv * 100) if total_inv > 0 else 0
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("มูลค่าพอร์ตคาดการณ์", f"{total_inv:,.0f} บาท")
-            m2.metric("เงินปันผลรายปี (โดยประมาณ)", f"{total_div:,.2f} บาท")
-            m3.metric("อัตราผลตอบแทนเฉลี่ย (Yield)", f"{avg_yield_port:.2f}%")
-            
-            st.caption("*หมายเหตุ: ข้อมูลหุ้นไทยอ้างอิงราคาล่าสุด | กองทุนและตราสารหนี้ใช้ราคาและผลตอบแทนสมมติเพื่อการคำนวณเท่านั้น")
+        # Show DataFrame with use_container_width=True
+        st.dataframe(
+            df_sim_final.style.format({
+                'จำนวนเงิน (Invested)': '{:,.2f}',
+                'จำนวนหุ้น (Qty)': '{:,}',
+                '%ปันผล (Yield)': '{:.2f}%',
+                'ปันผล (บาท)': '{:,.2f}'
+            }),
+            use_container_width=True,
+            hide_index=True,
+            height=(len(df_sim_final) + 1) * 35 + 3
+        )
+        
+        # Summary Metrics
+        total_inv = df_sim_final['จำนวนเงิน (Invested)'].sum()
+        total_div = df_sim_final['ปันผล (บาท)'].sum()
+        avg_yield_port = (total_div / total_inv * 100) if total_inv > 0 else 0
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("มูลค่าพอร์ตคาดการณ์", f"{total_inv:,.0f} บาท")
+        m2.metric("เงินปันผลรายปี (โดยประมาณ)", f"{total_div:,.2f} บาท")
+        m3.metric("อัตราผลตอบแทนเฉลี่ย (Yield)", f"{avg_yield_port:.2f}%")
+        
+        st.caption("*หมายเหตุ: ข้อมูลหุ้นไทยอ้างอิงราคาล่าสุด | กองทุนและตราสารหนี้ใช้ราคาและผลตอบแทนสมมติเพื่อการคำนวณเท่านั้น")
 
 elif page == "พอร์ตของฉัน (My Portfolio)":
     st.title("🎒 พอร์ตของฉัน (My Portfolio)")
