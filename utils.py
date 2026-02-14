@@ -43,16 +43,99 @@ def get_stock_data(ticker_symbol):
             except:
                 return np.nan
 
+
+        # --- MANUAL CALCULATION OVERRIDE (For Accuracy) ---
+        # 1. Fetch Basic Financials (One Call)
+        # Try to patch 0/null values by calculating from raw statements if available
+        try:
+            # We use 'fast_info' for price/market_cap which is faster and often more up-to-date
+            current_price = stock.fast_info.last_price
+            market_cap = stock.fast_info.market_cap
+            
+            # Use 'income_stmt' and 'balance_sheet' (new yf)
+            fin = stock.income_stmt
+            bs = stock.balance_sheet
+            
+            if not fin.empty and not bs.empty:
+                # Latest Annual
+                latest_fin = fin.iloc[:, 0]
+                latest_bs = bs.iloc[:, 0]
+                
+                # EPS
+                # 'Basic EPS', 'Diluted EPS'
+                eps_calc = latest_fin.get('Basic EPS', 0)
+                if pd.isna(eps_calc) or eps_calc == 0: eps_calc = latest_fin.get('Diluted EPS', 0)
+                
+                # Equity
+                equity_calc = latest_bs.get('Stockholders Equity', latest_bs.get('Total Equity Gross Minority Interest', 0))
+                
+                # Net Income
+                net_income_calc = latest_fin.get('Net Income', latest_fin.get('Net Income Common Stockholders', 0))
+                if pd.isna(net_income_calc): net_income_calc = 0
+                
+                # Shares
+                shares_calc = latest_bs.get('Ordinary Shares Number', latest_bs.get('Share Issued', 0))
+                
+                # BVPS
+                bvps_calc = equity_calc / shares_calc if shares_calc > 0 else 0
+                
+                # ROE
+                roe_calc = net_income_calc / equity_calc if equity_calc > 0 else 0
+                
+                # NPM
+                total_rev = latest_fin.get('Total Revenue', 0)
+                npm_calc = net_income_calc / total_rev if total_rev > 0 else 0
+                
+                # D/E
+                total_debt = latest_bs.get('Total Debt', latest_bs.get('Total Liabilities Net Minority Interest', 0)) # Fallback to TL
+                de_calc = total_debt / equity_calc if equity_calc > 0 else 0
+                
+                # Apply Overrides if API is weak
+                get_float_safe = lambda k, default: float(info.get(k)) if info.get(k) is not None else default
+                
+                eps = get_float_safe('trailingEps', eps_calc)
+                if eps == 0 and eps_calc != 0: eps = eps_calc # Priority Correction
+                
+                bvps = get_float_safe('bookValue', bvps_calc)
+                if bvps == 0 and bvps_calc != 0: bvps = bvps_calc
+                
+                roe = get_float_safe('returnOnEquity', roe_calc)
+                if (roe == 0 or pd.isna(roe)) and roe_calc != 0: roe = roe_calc
+                
+                npm = get_float_safe('profitMargins', npm_calc)
+                if (npm == 0 or pd.isna(npm)) and npm_calc != 0: npm = npm_calc
+                
+                de = get_float_safe('debtToEquity', de_calc * 100) # API uses %, we use ratio in calc
+                
+            else:
+                # Fallback to direct info
+                eps = get_float('trailingEps')
+                bvps = get_float('bookValue')
+                roe = get_float('returnOnEquity')
+                npm = get_float('profitMargins')
+                de = get_float('debtToEquity')
+
+        except Exception as e_calc:
+            # print(f"Calc error {ticker_symbol}: {e_calc}")
+            # Valid fallback
+            current_price = get_float('currentPrice')
+            market_cap = get_float('marketCap')
+            eps = get_float('trailingEps')
+            bvps = get_float('bookValue')
+            roe = get_float('returnOnEquity')
+            npm = get_float('profitMargins')
+            de = get_float('debtToEquity')
+
         data = {
             'symbol': ticker_symbol, # keep original without .BK for display
-            'price': get_float('currentPrice'),
+            'price': current_price,
             'beta': get_float('beta'),
             'dividendRate': get_float('dividendRate'),
             'dividendYield': get_float('dividendYield'),
             'payoutRatio': get_float('payoutRatio'),
-            'trailingEps': get_float('trailingEps'),
-            'bookValue': get_float('bookValue'),
-            'returnOnEquity': get_float('returnOnEquity'),
+            'trailingEps': eps,
+            'bookValue': bvps,
+            'returnOnEquity': roe,
             'longName': info.get('longName', ticker_symbol),
             'sector': info.get('sector', 'Unknown'),
             'summary': info.get('longBusinessSummary', 'No description available.'),
@@ -60,15 +143,15 @@ def get_stock_data(ticker_symbol):
             'targetPrice': get_float('targetMeanPrice'),
             'recommendation': get_float('recommendationMean'),
             'pegRatio': get_float('pegRatio'),
-            'debtToEquity': get_float('debtToEquity'),
-            'profitMargins': get_float('profitMargins'),
+            'debtToEquity': de,
+            'profitMargins': npm,
             'revenueGrowth': get_float('revenueGrowth'),
             'earningsGrowth': get_float('earningsGrowth'),
             'ebitda': get_float('ebitda'),
             'returnOnAssets': get_float('returnOnAssets'),
             'currentRatio': get_float('currentRatio'),
             'forwardEps': get_float('forwardEps'),
-            'marketCap': get_float('marketCap'),
+            'marketCap': market_cap,
             'grossMargins': get_float('grossMargins'),
             'operatingMargins': get_float('operatingMargins'),
             'enterpriseToEbitda': get_float('enterpriseToEbitda'),
