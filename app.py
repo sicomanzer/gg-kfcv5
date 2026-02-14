@@ -255,6 +255,66 @@ if page == "แดชบอร์ดภาพรวม":
         hold_list = df[df['Action'] == 'Hold']
         sell_list = df[df['Action'] == 'Sell']
         
+        # --- MORNING ALERT POPUP (New Feature: Categorized) ---
+        if 'popup_shown' not in st.session_state:
+            st.session_state['popup_shown'] = False
+
+        if not buy_list.empty and not st.session_state['popup_shown']:
+            @st.dialog("🚀 อรุณสวัสดิ์ครับ! พบหุ้น Strong Buy เช้านี้", width="large")
+            def show_morning_alert(opportunities):
+                st.balloons() # Celeb Effect
+                
+                # Compare with Yesterday's Log (Lazy logic: Check if present in 'yesterday' entry of alert log)
+                import datetime
+                alert_log = utils.load_alert_log()
+                yesterday_str = (datetime.datetime.now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                
+                # Get yesterday's strong buys if any
+                yesterday_buys = []
+                if yesterday_str in alert_log:
+                    yesterday_buys = alert_log[yesterday_str].get("buy", [])
+                
+                # Categorize
+                new_faces = opportunities[~opportunities['symbol'].isin(yesterday_buys)]
+                old_faces = opportunities[opportunities['symbol'].isin(yesterday_buys)]
+                
+                tab1, tab2 = st.tabs([f"✨ หุ้นน้องใหม่ ({len(new_faces)})", f"📌 หุ้นเดิมน่าสะสม ({len(old_faces)})"])
+                
+                with tab1:
+                    if not new_faces.empty:
+                        st.success(f"🎉 พบหุ้นใหม่ที่เพิ่งเข้าเกณฑ์ Strong Buy วันนี้!")
+                        st.dataframe(
+                            new_faces[['symbol', 'price', 'fair_value', 'VI Score', 'margin_of_safety']].style.format({
+                                'price': '{:.2f}', 'fair_value': '{:.2f}', 'margin_of_safety': '{:.2f}%'
+                            }), 
+                            hide_index=True
+                        )
+                    else:
+                        st.info("วันนี้ยังไม่มีหุ้นหน้าใหม่เข้าเกณฑ์เพิ่มครับ")
+
+                with tab2:
+                    if not old_faces.empty:
+                        st.dataframe(
+                            old_faces[['symbol', 'price', 'fair_value', 'VI Score', 'margin_of_safety']].style.format({
+                                'price': '{:.2f}', 'fair_value': '{:.2f}', 'margin_of_safety': '{:.2f}%'
+                            }), 
+                            hide_index=True
+                        )
+                    else:
+                        st.info("ไม่มีหุ้นค้างเดิมครับ")
+
+                st.info("💡 ข้อมูลอ้างอิงจากประวัติการแจ้งเตือน (Alert Log) ของเมื่อวาน")
+                
+                # HTML Audio Injection for Notification Sound
+                sound_html = """
+                <audio autoplay>
+                <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+                </audio>
+                """
+                st.markdown(sound_html, unsafe_allow_html=True)
+            
+            show_morning_alert(buy_list)
+            st.session_state['popup_shown'] = True
         with col_act1:
             st.success(f"🟢 **หุ้นน่าสะสม (Strong Buy): {len(buy_list)} ตัว**")
             if not buy_list.empty:
