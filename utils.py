@@ -960,8 +960,54 @@ def fetch_stock_news(ticker_symbol):
     try:
         t = ticker_symbol + ".BK" if not ticker_symbol.endswith(".BK") else ticker_symbol
         stock = yf.Ticker(t)
-        news = stock.news
-        return news if news else []
+        raw_news = stock.news
+        
+        formatted_news = []
+        if raw_news:
+            for item in raw_news:
+                # New yfinance structure puts data inside 'content'
+                data = item.get('content', item)
+                
+                title = data.get('title', 'No Title')
+                
+                # Publisher
+                publisher = 'Unknown'
+                if 'provider' in data and isinstance(data['provider'], dict):
+                    publisher = data['provider'].get('displayName', 'Unknown')
+                
+                # Link
+                link = '#'
+                if 'clickThroughUrl' in data and isinstance(data['clickThroughUrl'], dict):
+                    link = data['clickThroughUrl'].get('url', '#')
+                elif 'canonicalUrl' in data and isinstance(data['canonicalUrl'], dict):
+                    link = data['canonicalUrl'].get('url', '#')
+                elif 'link' in data:
+                    link = data['link']
+                
+                # Time (Convert ISO 'pubDate' to timestamp for app.py compatibility)
+                timestamp = 0
+                if 'pubDate' in data:
+                    try:
+                        # Use pandas for easy ISO parsing
+                        dt = pd.to_datetime(data['pubDate'])
+                        timestamp = dt.timestamp()
+                    except:
+                        pass
+                elif 'providerPublishTime' in data:
+                    timestamp = data['providerPublishTime']
+
+                # Thumbnail
+                thumbnail = data.get('thumbnail', None)
+                
+                formatted_news.append({
+                    'title': title,
+                    'publisher': publisher,
+                    'link': link,
+                    'providerPublishTime': timestamp,
+                    'thumbnail': thumbnail
+                })
+                
+        return formatted_news
     except Exception as e:
         print(f"Error fetching news for {ticker_symbol}: {e}")
         return []
